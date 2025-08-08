@@ -1,0 +1,22 @@
+# Build artifacts
+bin/
+obj/
+
+# IDEs
+.vs/
+.idea/
+.vscode/
+
+# Logs
+*.log
+
+# NuGet (if using packages folder)
+packages/
+*.nupkg
+
+# Publish/output
+publish/
+out/
+
+# Local settings (keep secrets out of git)
+appsettings.*.local.json
