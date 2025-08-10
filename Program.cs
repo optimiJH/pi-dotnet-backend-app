@@ -99,11 +99,27 @@ app.MapPost("/api/devices/enroll", (EnrollRequest req) =>
     if (string.IsNullOrWhiteSpace(req.DeviceFingerprint) || string.IsNullOrWhiteSpace(req.EnrollmentKey))
         return Results.BadRequest();
 
-    // v1: accept any non-empty enrollmentKey
-    var existing = InMemStore.Devices.Values.FirstOrDefault(d => d.Name == req.DeviceFingerprint);
-    var device = existing ?? new Device { Name = req.DeviceFingerprint, Status = DeviceStatus.Online, LastSeenAt = DateTimeOffset.UtcNow };
+    // DEV BYPASS: allow "dev" key during development (optional)
+    var devBypass = string.Equals(req.EnrollmentKey, "dev", StringComparison.OrdinalIgnoreCase);
 
-    // issue a simple token (plain for v1)
+    // Validate invite unless using dev bypass
+    if (!devBypass)
+    {
+        if (!InMemStore.Invites.TryGetValue(req.EnrollmentKey, out var exp) || exp < DateTimeOffset.UtcNow)
+            return Results.BadRequest("Invalid or expired enrollmentKey.");
+        InMemStore.Invites.TryRemove(req.EnrollmentKey, out _);
+    }
+
+    // Create or get device by fingerprint (hostname)
+    var existing = InMemStore.Devices.Values.FirstOrDefault(d => d.Name == req.DeviceFingerprint);
+    var device = existing ?? new Device
+    {
+        Name = req.DeviceFingerprint,
+        Status = DeviceStatus.Online,
+        LastSeenAt = DateTimeOffset.UtcNow
+    };
+
+    // Issue/refresh token
     device.Token = Guid.NewGuid().ToString("n");
     InMemStore.Devices[device.Id] = device;
 
@@ -164,6 +180,57 @@ app.MapPost("/api/devices/{id:guid}/commands", async (Guid id, CommandRequest re
     return Results.Ok(new { commandId = cmd.Id, status = cmd.Status });
 });
 
+// POST /api/devices/invites  → issue a one-time enrollment key (acts as "Approve")
+app.MapPost("/api/devices/invites", () =>
+{
+    var key = Guid.NewGuid().ToString("n")[..16]; // 16-char key
+    var exp = DateTimeOffset.UtcNow.AddHours(2);  // valid for 2 hours
+    InMemStore.Invites[key] = exp;  
+    return Results.Ok(new InviteDto(key, exp));
+});
+
+// DELETE /api/devices/{id} → remove device and its commands
+app.MapDelete("/api/devices/{id:guid}", (Guid id) =>
+{
+    InMemStore.Devices.TryRemove(id, out _);
+
+    // Close live socket if connected
+    if (InMemStore.LiveSockets.TryGetValue(id, out var live))
+    {
+        try { live.Abort(); } catch { /* ignore */ }
+        InMemStore.LiveSockets.TryRemove(id, out _);
+    }
+
+    // Purge commands
+    var toDel = InMemStore.Commands.Where(kv => kv.Value.DeviceId == id)
+                                   .Select(kv => kv.Key).ToList();
+    foreach (var cid in toDel) InMemStore.Commands.TryRemove(cid, out _);
+
+    return Results.NoContent();
+});
+
+// POST /api/devices/{id}/block → prevent future connections, kick if online
+app.MapPost("/api/devices/{id:guid}/block", (Guid id) =>
+{
+    if (!InMemStore.Devices.TryGetValue(id, out var d)) return Results.NotFound();
+    d.Status = DeviceStatus.Blocked;
+
+    if (InMemStore.LiveSockets.TryGetValue(id, out var ws))
+    {
+        try { ws.Abort(); } catch { /* ignore */ }
+        InMemStore.LiveSockets.TryRemove(id, out _);
+    }
+    return Results.Ok();
+});
+
+// POST /api/devices/{id}/unblock → allow reconnects again
+app.MapPost("/api/devices/{id:guid}/unblock", (Guid id) =>
+{
+    if (!InMemStore.Devices.TryGetValue(id, out var d)) return Results.NotFound();
+    d.Status = DeviceStatus.Offline; // will flip to Online after next heartbeat
+    return Results.Ok();
+});
+
 /* 8) Device WebSocket (management channel) → /device-ws
       Query: ?deviceId=<guid>&token=<string> */
 app.Map("/device-ws", async (HttpContext ctx) =>
@@ -193,6 +260,29 @@ app.Map("/device-ws", async (HttpContext ctx) =>
     InMemStore.LiveSockets[deviceId] = ws;
 
     device.LastSeenAt = DateTimeOffset.UtcNow;
+
+    // -------------------- FLUSH QUEUED ON CONNECT --------------------
+    var pending = InMemStore.Commands.Values
+        .Where(c => c.DeviceId == device.Id && c.Status == "queued")
+        .ToList();
+
+    // ADD LOG HERE
+    Console.WriteLine($"Flushed {pending.Count} queued command(s) to {device.Name} ({device.Id})");
+
+    foreach (var c in pending)
+    {
+        var push = new
+        {
+            type = "command",
+            commandId = c.Id,
+            name = c.Type,
+            payload = JsonSerializer.Deserialize<object>(c.PayloadJson)
+        };
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(push);
+        await ws.SendAsync(bytes, WebSocketMessageType.Text, true, ctx.RequestAborted);
+        c.Status = "sent"; // mark so we don't resend on next reconnect
+    }
+    // ----------------------------------------------------------------
 
     var buffer = new byte[64 * 1024];
     try

@@ -39,4 +39,10 @@ public static class InMemStore
     public static readonly ConcurrentDictionary<Guid, Device> Devices = new();
     public static readonly ConcurrentDictionary<Guid, DeviceCommand> Commands = new(); // <-- DeviceCommand
     public static readonly ConcurrentDictionary<Guid, WebSocket> LiveSockets = new();
+    // One-time enrollment invites (key -> expiry)
+    public static readonly ConcurrentDictionary<string, DateTimeOffset> Invites = new();
+
 }
+
+// DTO the client/front-end will receive
+public record InviteDto(string EnrollmentKey, DateTimeOffset ExpiresAt);
