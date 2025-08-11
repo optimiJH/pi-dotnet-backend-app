@@ -1,0 +1,18 @@
+[Unit]
+Description=Pi Device Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/pi-agent/agent.env
+Environment=PYTHONUNBUFFERED=1
+WorkingDirectory=/opt/pi-agent
+ExecStart=/usr/bin/python3 -u /opt/pi-agent/agent.py
+Restart=always
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

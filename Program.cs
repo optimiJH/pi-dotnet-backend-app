@@ -123,6 +123,9 @@ app.MapPost("/api/devices/enroll", (EnrollRequest req) =>
     device.Token = Guid.NewGuid().ToString("n");
     InMemStore.Devices[device.Id] = device;
 
+    // SAVE DEVICES AFTER ENROLL
+    Persistence.SaveDevices();
+
     return Results.Ok(new { deviceId = device.Id, token = device.Token });
 });
 
@@ -177,8 +180,73 @@ app.MapPost("/api/devices/{id:guid}/commands", async (Guid id, CommandRequest re
         cmd.Status = "sent";
     }
 
+    // SAVE COMMANDS AFTER QUEUE/SEND
+    Persistence.SaveCommands();
+
     return Results.Ok(new { commandId = cmd.Id, status = cmd.Status });
 });
+
+/* 7.1) Agent ACK → POST /api/commands/{id}/ack
+       Body: { "deviceId": "<guid>" }  // optional */
+app.MapPost("/api/commands/{id:guid}/ack", (Guid id, AckDto dto) =>
+{
+    if (!InMemStore.Commands.TryGetValue(id, out var c)) return Results.NotFound();
+    // Optional sanity check that the ack came from the right device
+    if (dto.DeviceId is not null && Guid.TryParse(dto.DeviceId, out var devId) && c.DeviceId != devId)
+        return Results.BadRequest("deviceId mismatch");
+
+    c.Status = "acked";
+    c.AckAt  = DateTimeOffset.UtcNow;
+
+    Persistence.SaveCommands();
+    return Results.NoContent();
+});
+
+/* 7.2) Agent DONE → POST /api/commands/{id}/done
+       Body: { "deviceId": "<guid>", "status": "ok|failed|error", "result": "<text>", "error":"<text>" } */
+app.MapPost("/api/commands/{id:guid}/done", (Guid id, DoneDto dto) =>
+{
+    if (!InMemStore.Commands.TryGetValue(id, out var c)) return Results.NotFound();
+    if (dto.DeviceId is not null && Guid.TryParse(dto.DeviceId, out var devId) && c.DeviceId != devId)
+        return Results.BadRequest("deviceId mismatch");
+
+    // If we never saw a WS ack, mark ack time now for consistency
+    c.AckAt ??= DateTimeOffset.UtcNow;
+
+    var st = (dto.Status ?? "ok").ToLowerInvariant();
+    c.Status = st is "ok" or "done" ? "done" : "failed";
+    c.Result = dto.Result ?? dto.Error;
+
+    Persistence.SaveCommands();
+    return Results.NoContent();
+});
+
+/* 7.3) Safety net: Agent can pull pending commands
+       GET /api/devices/{id}/commands?state=pending
+       states: pending -> not yet sent, sent -> pushed but not acked */
+app.MapGet("/api/devices/{id:guid}/commands", (Guid id, string? state) =>
+{
+    if (!InMemStore.Devices.ContainsKey(id)) return Results.NotFound();
+
+    var wanted = (state ?? "pending").ToLowerInvariant();
+    var cmds = InMemStore.Commands.Values
+        .Where(c => c.DeviceId == id && (wanted switch
+        {
+            "pending" => c.Status is "queued" or "sent",
+            "sent"    => c.Status is "sent",
+            "acked"   => c.Status is "acked",
+            _         => c.Status is "queued" or "sent"
+        }))
+        .OrderBy(c => c.CreatedAt)
+        .Select(c => new {
+            id = c.Id,
+            name = c.Type,
+            payload = JsonSerializer.Deserialize<object>(c.PayloadJson)
+        });
+
+    return Results.Json(cmds);
+});
+
 
 // POST /api/devices/invites  → issue a one-time enrollment key (acts as "Approve")
 app.MapPost("/api/devices/invites", () =>
@@ -206,6 +274,8 @@ app.MapDelete("/api/devices/{id:guid}", (Guid id) =>
                                    .Select(kv => kv.Key).ToList();
     foreach (var cid in toDel) InMemStore.Commands.TryRemove(cid, out _);
 
+    Persistence.SaveDevices();
+
     return Results.NoContent();
 });
 
@@ -220,6 +290,7 @@ app.MapPost("/api/devices/{id:guid}/block", (Guid id) =>
         try { ws.Abort(); } catch { /* ignore */ }
         InMemStore.LiveSockets.TryRemove(id, out _);
     }
+    Persistence.SaveDevices();
     return Results.Ok();
 });
 
@@ -228,6 +299,8 @@ app.MapPost("/api/devices/{id:guid}/unblock", (Guid id) =>
 {
     if (!InMemStore.Devices.TryGetValue(id, out var d)) return Results.NotFound();
     d.Status = DeviceStatus.Offline; // will flip to Online after next heartbeat
+
+    Persistence.SaveDevices();
     return Results.Ok();
 });
 
@@ -282,6 +355,9 @@ app.Map("/device-ws", async (HttpContext ctx) =>
         await ws.SendAsync(bytes, WebSocketMessageType.Text, true, ctx.RequestAborted);
         c.Status = "sent"; // mark so we don't resend on next reconnect
     }
+
+    // SAVE COMMANDS AFTER FLUSH
+    Persistence.SaveCommands();
     // ----------------------------------------------------------------
 
     var buffer = new byte[64 * 1024];
@@ -308,6 +384,9 @@ app.Map("/device-ws", async (HttpContext ctx) =>
                     c.Status = msg.TryGetProperty("status", out var s) ? (s.GetString() ?? "acked") : "acked";
                     c.AckAt = DateTimeOffset.UtcNow;
                     c.Result = msg.TryGetProperty("result", out var r) ? r.GetString() : null;
+
+                    // SAVE COMMANDS AFTER ACK
+                    Persistence.SaveCommands();
                 }
             }
         }
@@ -316,6 +395,19 @@ app.Map("/device-ws", async (HttpContext ctx) =>
     {
         InMemStore.LiveSockets.TryRemove(deviceId, out _);
     }
+});
+
+app.MapGet("/api/agent/version", () =>
+{
+    var dir = Path.Combine(AppContext.BaseDirectory, "agent_bundle");
+    var has = Directory.Exists(dir);
+    return Results.Ok(new { present = has, path = dir });
+});
+
+app.Lifetime.ApplicationStopping.Register(() =>
+{
+    try { Persistence.SaveDevices(); } catch { }
+    try { Persistence.SaveCommands(); } catch { }
 });
 
 /* 9) Listen on all interfaces, port 5005 */
@@ -329,3 +421,6 @@ public record SensorReading(
     double? Pressure,
     long Timestamp
 );
+
+public record AckDto(string? DeviceId);
+public record DoneDto(string? DeviceId, string? Status, string? Result, string? Error);

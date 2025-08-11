@@ -1,0 +1,13 @@
+# Normalize text by default
+* text=auto
+
+# Force LF for Linux-side files
+*.sh          text eol=lf
+*.service     text eol=lf
+*.py          text eol=lf
+Dockerfile    text eol=lf
+
+# Keep Windows scripts on CRLF
+*.bat         text eol=crlf
+*.cmd         text eol=crlf
+*.ps1         text eol=crlf

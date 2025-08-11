@@ -42,6 +42,11 @@ public static class InMemStore
     // One-time enrollment invites (key -> expiry)
     public static readonly ConcurrentDictionary<string, DateTimeOffset> Invites = new();
 
+    static InMemStore()
+    {
+        Persistence.Load();
+    }
+
 }
 
 // DTO the client/front-end will receive
