@@ -36,24 +36,33 @@ app.MapGet("/", () => "Sensor WebSocket server is running.");
 app.MapGet("/readings", () => Results.Json(readings.ToArray()));
 
 /* 4) WebSocket endpoint → /ws  (existing sensor readings) */
-app.UseWebSockets(new WebSocketOptions { KeepAliveInterval = TimeSpan.FromSeconds(20) });
+app.UseWebSockets(new WebSocketOptions { KeepAliveInterval = TimeSpan.FromSeconds(30) });
 
 app.Map("/ws", async (HttpContext ctx) =>
 {
     if (!ctx.WebSockets.IsWebSocketRequest)
-    {
-        ctx.Response.StatusCode = StatusCodes.Status400BadRequest;
-        return;
-    }
+    { ctx.Response.StatusCode = StatusCodes.Status400BadRequest; return; }
+
+    // Require auth
+    var deviceIdQ = ctx.Request.Query["deviceId"].FirstOrDefault();
+    var tokenQ    = ctx.Request.Query["token"].FirstOrDefault();
+
+    if (!Guid.TryParse(deviceIdQ, out var deviceId) || string.IsNullOrWhiteSpace(tokenQ))
+    { ctx.Response.StatusCode = StatusCodes.Status401Unauthorized; return; }
+
+    if (!InMemStore.Devices.TryGetValue(deviceId, out var device) || device.Token != tokenQ)
+    { ctx.Response.StatusCode = StatusCodes.Status401Unauthorized; return; }
+
+    if (device.Status == DeviceStatus.Blocked)
+    { ctx.Response.StatusCode = StatusCodes.Status401Unauthorized; return; }
 
     using var socket = await ctx.WebSockets.AcceptWebSocketAsync();
     var buffer = new byte[8192];
-
     var ms = new MemoryStream();
+
     while (true)
     {
         var result = await socket.ReceiveAsync(buffer, CancellationToken.None);
-
         if (result.MessageType == WebSocketMessageType.Close)
         {
             await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Client closed", CancellationToken.None);
@@ -67,22 +76,20 @@ app.Map("/ws", async (HttpContext ctx) =>
             var json = Encoding.UTF8.GetString(ms.ToArray());
             ms.SetLength(0);
 
-            try
+            // Re-check block just before enqueue (belt & suspenders)
+            if (InMemStore.Devices.TryGetValue(deviceId, out var d2) && d2.Status != DeviceStatus.Blocked)
             {
-                var r = JsonSerializer.Deserialize<SensorReading>(json,
-                        new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
-
-                if (r is not null)
+                try
                 {
-                    readings.Enqueue(r);
-                    Console.WriteLine($"[{r.DeviceId}] T={r.Temperature:0.0}°C "
-                                    + (r.Humidity is null ? "" : $"H={r.Humidity:0.0}% ")
-                                    + (r.Pressure is null ? "" : $"P={r.Pressure:0.0}hPa "));
+                    var r = JsonSerializer.Deserialize<SensorReading>(json,
+                             new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+                    if (r is not null)
+                    {
+                        var reading = r with { DeviceId = device.Id.ToString() };
+                        readings.Enqueue(reading);
+                    }
                 }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Bad JSON: {ex.Message}\n{json}");
+                catch { /* ignore bad json */ }
             }
         }
     }

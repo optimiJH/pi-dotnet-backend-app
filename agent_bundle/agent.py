@@ -36,7 +36,7 @@ if not DEVICE_ID or not TOKEN:
 WS_URL      = f"{WS_BASE}/device-ws?deviceId={DEVICE_ID}&token={TOKEN}"
 SCRIPTS_DIR = "/opt/pi-agent/scripts"
 HTTP_HDRS   = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
-SENSOR_WS_URL = f"{WS_BASE}/ws"  # backend /ws endpoint for sensor readings
+SENSOR_WS_URL = f"{WS_BASE}/ws?deviceId={DEVICE_ID}&token={TOKEN}"  # backend /ws endpoint for sensor readings
 
 # ---------- Heartbeat (single thread guarded) ----------
 _hb_stop = None

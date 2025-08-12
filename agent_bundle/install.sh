@@ -11,6 +11,10 @@ sudo chown -R root:root "$INSTALL_DIR"
 sudo chmod +x "$INSTALL_DIR/install.sh" || true
 sudo chmod +x "$INSTALL_DIR"/scripts/*.sh || true
 
+# Always stop old agent before (re)enrolling
+sudo systemctl stop device-agent 2>/dev/null || true
+sudo pkill -f '/opt/pi-agent/agent.py' 2>/dev/null || true
+
 # Python deps (for agent + JSON parsing)
 if ! command -v python3 >/dev/null 2>&1; then
   sudo apt-get update -y && sudo apt-get install -y python3 python3-pip
@@ -101,6 +105,8 @@ RestartSec=3
 EOF
 
 sudo systemctl daemon-reload
-sudo systemctl enable --now "$UNIT_NAME"
+sudo systemctl enable "$UNIT_NAME"
+# Critical: restart to load new env (DEVICE_ID/TOKEN)
+sudo systemctl restart "$UNIT_NAME"
 
 echo "Agent installed and started (deviceId=$DEVICE_ID)."
