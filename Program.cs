@@ -23,7 +23,7 @@ var app = builder.Build();
 app.UseCors("AllowAngular");
 
 /* ========================================================================== */
-/*  A) ORIGINAL SENSOR PIPELINE (unchanged)                                   */
+/*  A) ORIGINAL SENSOR PIPELINE                                               */
 /* ========================================================================== */
 
 /* 1) Shared, thread-safe store of all readings */
@@ -96,7 +96,7 @@ app.Map("/ws", async (HttpContext ctx) =>
 });
 
 /* ========================================================================== */
-/*  B) NEW: DEVICE MANAGEMENT (enroll, list, command, device WebSocket)       */
+/*  B) DEVICE MANAGEMENT (enroll, list, command, device WebSocket)       */
 /* ========================================================================== */
 
 /* 5) Enroll → POST /api/devices/enroll

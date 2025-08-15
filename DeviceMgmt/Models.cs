@@ -15,7 +15,7 @@ public class Device
     public DateTimeOffset RegisteredAt { get; init; } = DateTimeOffset.UtcNow;
     public DateTimeOffset? LastSeenAt { get; set; }
     public DeviceStatus Status { get; set; } = DeviceStatus.Offline;
-    public string Token { get; set; } = ""; // plain for v1; hash later
+    public string Token { get; set; } = "";
 }
 
 public class DeviceCommand

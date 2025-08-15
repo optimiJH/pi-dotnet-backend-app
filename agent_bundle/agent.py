@@ -124,7 +124,7 @@ def _report_loop(period_s: int):
             time.sleep(1)
     print("[agent] report loop stopped", flush=True)
 
-def _start_reporting(period_s: int = 60):
+def _start_reporting(period_s: int = 30):
     global _report_thread, _report_stop
     with _report_lock:
         if _report_thread and _report_thread.is_alive():
@@ -179,8 +179,8 @@ def execute_command_async(ws, cid: str, name: str, payload: dict):
             args = payload.get("args", {}) if isinstance(payload, dict) else {}
             status, result = run_local_script(sid, args)
         elif name == "start_report":
-            # payload example: {"periodSeconds": 60}
-            period = int((payload.get("periodSeconds") or 60))
+            # payload example: {"periodSeconds": 30}
+            period = int((payload.get("periodSeconds") or 30))
             ok, msg = _start_reporting(period)
             status, result = ("ok", msg) if ok else ("acked", msg)
         elif name == "stop_report":
